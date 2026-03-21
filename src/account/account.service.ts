@@ -5,19 +5,28 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateAccountDto } from './dto/create-account.dto';
+import { Prisma } from '../generated/prisma/client';
+import { UserRole } from '../common';
 
 @Injectable()
 export class AccountService {
   constructor(private readonly prisma: PrismaService) {}
 
+  private async findAccountByUserId(
+    userId: number,
+    tx?: Prisma.TransactionClient,
+  ) {
+    const client = tx ?? this.prisma;
+    const account = await client.account.findFirst({ where: { userId } });
+    if (!account) throw new NotFoundException('Account not found');
+    return account;
+  }
+
   async createAccount(data: CreateAccountDto) {
     const user = await this.prisma.user.findUnique({
       where: { id: data.userId },
     });
-
-    if (!user) {
-      throw new NotFoundException('User does not exist');
-    }
+    if (!user) throw new NotFoundException('User does not exist');
 
     return this.prisma.account.create({
       data: {
@@ -28,46 +37,7 @@ export class AccountService {
   }
 
   async getAccount(userId: number) {
-    const account = await this.prisma.account.findFirst({
-      where: { userId },
-    });
-
-    if (!account) {
-      throw new NotFoundException('Account not found');
-    }
-
-    return account;
-  }
-
-  async deposit(amount: number, UserId?: number) {
-    return this.prisma.$transaction(async (tx) => {
-      const account = await tx.account.findFirst({
-        where: { userId: UserId },
-      });
-
-      if (!account) {
-        throw new NotFoundException('Account not found');
-      }
-
-      const updatedAccount = await tx.account.update({
-        where: { id: account.id },
-        data: {
-          balance: {
-            increment: amount,
-          },
-        },
-      });
-
-      const transaction = await tx.transaction.create({
-        data: {
-          accountId: account.id,
-          amount: amount,
-          type: 'DEPOSIT',
-          status: 'SUCCESS',
-        },
-      });
-      return { account: updatedAccount, transaction };
-    });
+    return this.findAccountByUserId(userId);
   }
 
   async getAll(options?: { skip?: number; take?: number }) {
@@ -98,15 +68,31 @@ export class AccountService {
     };
   }
 
-  async withdraw(amount: number, userId: number) {
+  async deposit(amount: number, userId: number) {
     return this.prisma.$transaction(async (tx) => {
-      const account = await tx.account.findFirst({
-        where: { userId },
+      const account = await this.findAccountByUserId(userId, tx);
+
+      const updatedAccount = await tx.account.update({
+        where: { id: account.id },
+        data: { balance: { increment: amount } },
       });
 
-      if (!account) {
-        throw new NotFoundException('Account not found');
-      }
+      const transaction = await tx.transaction.create({
+        data: {
+          accountId: account.id,
+          amount,
+          type: 'DEPOSIT',
+          status: 'SUCCESS',
+        },
+      });
+
+      return { account: updatedAccount, transaction };
+    });
+  }
+
+  async withdraw(amount: number, userId: number) {
+    return this.prisma.$transaction(async (tx) => {
+      const account = await this.findAccountByUserId(userId, tx);
 
       if (account.balance < amount) {
         throw new BadRequestException('Insufficient balance');
@@ -114,15 +100,13 @@ export class AccountService {
 
       const updatedAccount = await tx.account.update({
         where: { id: account.id },
-        data: {
-          balance: { decrement: amount },
-        },
+        data: { balance: { decrement: amount } },
       });
 
       const transaction = await tx.transaction.create({
         data: {
           accountId: account.id,
-          amount: amount,
+          amount,
           type: 'WITHDRAW',
           status: 'SUCCESS',
         },
@@ -134,19 +118,11 @@ export class AccountService {
 
   async transfer(amount: number, senderUserId: number, receiverUserId: number) {
     return this.prisma.$transaction(async (tx) => {
-      const senderAccount = await tx.account.findFirst({
-        where: { userId: senderUserId },
-      });
-      if (!senderAccount) {
-        throw new NotFoundException('Sender account not found');
-      }
-
-      const receiverAccount = await tx.account.findFirst({
-        where: { userId: receiverUserId },
-      });
-      if (!receiverAccount) {
-        throw new NotFoundException('Receiver account not found');
-      }
+      const senderAccount = await this.findAccountByUserId(senderUserId, tx);
+      const receiverAccount = await this.findAccountByUserId(
+        receiverUserId,
+        tx,
+      );
 
       if (senderAccount.id === receiverAccount.id) {
         throw new BadRequestException('Cannot transfer to your own account');
@@ -192,11 +168,7 @@ export class AccountService {
         ],
       });
 
-      return {
-        sender: updatedSender,
-        receiver: updatedReceiver,
-        transaction,
-      };
+      return { sender: updatedSender, receiver: updatedReceiver, transaction };
     });
   }
 
@@ -205,14 +177,7 @@ export class AccountService {
     options?: { skip?: number; take?: number },
   ) {
     const pagination = { skip: options?.skip || 0, take: options?.take || 10 };
-
-    const account = await this.prisma.account.findFirst({
-      where: { userId },
-    });
-
-    if (!account) {
-      throw new NotFoundException('Account not found');
-    }
+    const account = await this.findAccountByUserId(userId);
 
     const totalTransactions = await this.prisma.transaction.count({
       where: { accountId: account.id },
@@ -244,11 +209,7 @@ export class AccountService {
       take: pagination.take,
       include: {
         account: {
-          select: {
-            id: true,
-            userId: true,
-            currency: true,
-          },
+          select: { id: true, userId: true, currency: true },
         },
       },
     });
@@ -260,4 +221,36 @@ export class AccountService {
       data: transactions,
     };
   }
+
+  async getAccountForUser(
+    requestingUserId: number,
+    requestingUserRole: string | undefined,
+    queryUserId?: number,
+    options?: { skip?: number; take?: number },
+  ) {
+    if (requestingUserRole === UserRole.Customer) {
+      return this.findAccountByUserId(requestingUserId);
+    }
+    if (queryUserId) {
+      return this.findAccountByUserId(queryUserId);
+    }
+    return this.getAll(options);
+  }
+  
+  async getTransactions(
+    requestingUserId: number,
+    requestingUserRole: string | undefined,
+    queryUserId?: number,
+    options?: { skip?: number; take?: number },
+  ) {
+    if (requestingUserRole === UserRole.Customer) {
+      return this.getTransactionHistory(requestingUserId, options);
+    }
+    if (queryUserId) {
+      return this.getTransactionHistory(queryUserId, options);
+    }
+    return this.getAllTransactions(options);
+  }
+
+  
 }
