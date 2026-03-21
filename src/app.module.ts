@@ -14,6 +14,7 @@ import { PrismaModule } from './prisma';
 import { AuthModule } from './auth';
 import { RedisModule } from './redis';
 import { AccountModule } from './account/account.module';
+import { AuditModule } from './audit';
 
 @Module({
   imports: [
@@ -38,6 +39,7 @@ import { AccountModule } from './account/account.module';
     RedisModule,
     AuthModule,
     AccountModule,
+    AuditModule,
   ],
   controllers: [AppController],
   providers: [

@@ -8,12 +8,14 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateAccountDto } from './dto/create-account.dto';
 import { UserRole } from '../common';
 import { IdempotencyService } from './idempotency.service';
+import { AuditService, AuditAction } from '../audit';
 
 @Injectable()
 export class AccountService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly idempotencyService: IdempotencyService,
+    private readonly auditService: AuditService,
   ) {}
 
   private async findAccountByUserId(
@@ -32,12 +34,19 @@ export class AccountService {
     });
     if (!user) throw new NotFoundException('User does not exist');
 
-    return this.prisma.account.create({
+    const account = await this.prisma.account.create({
       data: {
         userId: data.userId,
         currency: data.currency || 'INR',
       },
     });
+
+    await this.auditService.log(data.userId, AuditAction.CREATE_ACCOUNT, {
+      accountId: account.id,
+      currency: account.currency,
+    });
+
+    return account;
   }
 
   async getAccount(userId: number) {
@@ -105,6 +114,11 @@ export class AccountService {
       await this.idempotencyService.saveResponse(idempotencyKey, result);
     }
 
+    await this.auditService.log(userId, AuditAction.DEPOSIT, {
+      amount,
+      accountId: result.account.id,
+      transactionId: result.transaction.id,
+    });
     return result;
   }
 
@@ -143,6 +157,11 @@ export class AccountService {
       await this.idempotencyService.saveResponse(idempotencyKey, result);
     }
 
+    await this.auditService.log(userId, AuditAction.WITHDRAW, {
+      amount,
+      accountId: result.account.id,
+      transactionId: result.transaction.id,
+    });
     return result;
   }
 
@@ -215,6 +234,13 @@ export class AccountService {
     if (idempotencyKey) {
       await this.idempotencyService.saveResponse(idempotencyKey, result);
     }
+
+    await this.auditService.log(senderUserId, AuditAction.TRANSFER, {
+      amount,
+      senderAccountId: result.sender.id,
+      receiverAccountId: result.receiver.id,
+      transactionId: result.transaction.id,
+    });
 
     return result;
   }
