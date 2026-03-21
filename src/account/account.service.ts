@@ -3,14 +3,18 @@ import {
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
+import { Prisma } from '../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateAccountDto } from './dto/create-account.dto';
-import { Prisma } from '../generated/prisma/client';
 import { UserRole } from '../common';
+import { IdempotencyService } from './idempotency.service';
 
 @Injectable()
 export class AccountService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly idempotencyService: IdempotencyService,
+  ) {}
 
   private async findAccountByUserId(
     userId: number,
@@ -68,8 +72,16 @@ export class AccountService {
     };
   }
 
-  async deposit(amount: number, userId: number) {
-    return this.prisma.$transaction(async (tx) => {
+  async deposit(amount: number, userId: number, idempotencyKey?: string) {
+    console.log('idempotencyKey received:', idempotencyKey);
+    if (idempotencyKey) {
+      const existing =
+        await this.idempotencyService.getExistingResponse(idempotencyKey);
+      console.log('existing response:', existing);
+      if (existing) return existing.response;
+    }
+
+    const result = await this.prisma.$transaction(async (tx) => {
       const account = await this.findAccountByUserId(userId, tx);
 
       const updatedAccount = await tx.account.update({
@@ -88,10 +100,22 @@ export class AccountService {
 
       return { account: updatedAccount, transaction };
     });
+
+    if (idempotencyKey) {
+      await this.idempotencyService.saveResponse(idempotencyKey, result);
+    }
+
+    return result;
   }
 
-  async withdraw(amount: number, userId: number) {
-    return this.prisma.$transaction(async (tx) => {
+  async withdraw(amount: number, userId: number, idempotencyKey?: string) {
+    if (idempotencyKey) {
+      const existing =
+        await this.idempotencyService.getExistingResponse(idempotencyKey);
+      if (existing) return existing.response;
+    }
+
+    const result = await this.prisma.$transaction(async (tx) => {
       const account = await this.findAccountByUserId(userId, tx);
 
       if (account.balance < amount) {
@@ -114,10 +138,27 @@ export class AccountService {
 
       return { account: updatedAccount, transaction };
     });
+
+    if (idempotencyKey) {
+      await this.idempotencyService.saveResponse(idempotencyKey, result);
+    }
+
+    return result;
   }
 
-  async transfer(amount: number, senderUserId: number, receiverUserId: number) {
-    return this.prisma.$transaction(async (tx) => {
+  async transfer(
+    amount: number,
+    senderUserId: number,
+    receiverUserId: number,
+    idempotencyKey?: string,
+  ) {
+    if (idempotencyKey) {
+      const existing =
+        await this.idempotencyService.getExistingResponse(idempotencyKey);
+      if (existing) return existing.response;
+    }
+
+    const result = await this.prisma.$transaction(async (tx) => {
       const senderAccount = await this.findAccountByUserId(senderUserId, tx);
       const receiverAccount = await this.findAccountByUserId(
         receiverUserId,
@@ -170,6 +211,12 @@ export class AccountService {
 
       return { sender: updatedSender, receiver: updatedReceiver, transaction };
     });
+
+    if (idempotencyKey) {
+      await this.idempotencyService.saveResponse(idempotencyKey, result);
+    }
+
+    return result;
   }
 
   async getTransactionHistory(
@@ -236,7 +283,7 @@ export class AccountService {
     }
     return this.getAll(options);
   }
-  
+
   async getTransactions(
     requestingUserId: number,
     requestingUserRole: string | undefined,
@@ -251,6 +298,4 @@ export class AccountService {
     }
     return this.getAllTransactions(options);
   }
-
-  
 }
