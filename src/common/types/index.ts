@@ -48,6 +48,21 @@ export class EnvironmentVariables {
   REDIS_URI: string;
 
   @IsString()
+  SMTP_HOST: string;
+  
+  @IsInt()
+  SMTP_PORT: number;
+  
+  @IsString()
+  SMTP_USER: string;
+  
+  @IsString()
+  SMTP_PASSWORD: string;
+  
+  @IsString()
+  SMTP_SENDER: string;
+
+  @IsString()
   STORAGE_DIR: string;
 
   @IsOptional()
