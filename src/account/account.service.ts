@@ -10,6 +10,7 @@ import { UserRole } from '../common';
 import { IdempotencyService } from './idempotency.service';
 import { AuditService, AuditAction } from '../audit';
 import { RedisCacheService } from 'src/redis/redis-cache.service';
+import { FraudService } from 'src/fraud/fraud.service';
 @Injectable()
 export class AccountService {
   constructor(
@@ -17,7 +18,8 @@ export class AccountService {
     private readonly idempotencyService: IdempotencyService,
     private readonly auditService: AuditService,
     private readonly cacheService: RedisCacheService,
-  ) {}
+    private readonly fraudService: FraudService,
+  ) { }
 
   private async findAccountByUserId(
     userId: number,
@@ -103,6 +105,7 @@ export class AccountService {
   }
 
   async deposit(amount: number, userId: number, idempotencyKey?: string) {
+    await this.fraudService.checkFraud(userId, amount)
     console.log('idempotencyKey received:', idempotencyKey);
     if (idempotencyKey) {
       const existing =
@@ -133,6 +136,7 @@ export class AccountService {
 
     await this.cacheService.invalidateAfterTransaction(userId);
 
+    await this.fraudService.recordTransaction(userId, amount)
     if (idempotencyKey) {
       await this.idempotencyService.saveResponse(idempotencyKey, result);
     }
@@ -146,6 +150,8 @@ export class AccountService {
   }
 
   async withdraw(amount: number, userId: number, idempotencyKey?: string) {
+
+    await this.fraudService.checkFraud(userId, amount);
     if (idempotencyKey) {
       const existing =
         await this.idempotencyService.getExistingResponse(idempotencyKey);
@@ -176,7 +182,9 @@ export class AccountService {
       return { account: updatedAccount, transaction };
     });
 
+
     await this.cacheService.invalidateAfterTransaction(userId);
+    await this.fraudService.recordTransaction(userId, amount);
     if (idempotencyKey) {
       await this.idempotencyService.saveResponse(idempotencyKey, result);
     }
@@ -195,6 +203,8 @@ export class AccountService {
     receiverUserId: number,
     idempotencyKey?: string,
   ) {
+
+    await this.fraudService.checkFraud(senderUserId, amount);
     if (idempotencyKey) {
       const existing =
         await this.idempotencyService.getExistingResponse(idempotencyKey);
@@ -258,6 +268,9 @@ export class AccountService {
       this.cacheService.invalidateAfterTransaction(senderUserId),
       this.cacheService.invalidateAfterTransaction(receiverUserId),
     ]);
+
+     await this.fraudService.recordTransaction(senderUserId, amount);
+
     if (idempotencyKey) {
       await this.idempotencyService.saveResponse(idempotencyKey, result);
     }
