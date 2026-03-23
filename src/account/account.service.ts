@@ -9,13 +9,14 @@ import { CreateAccountDto } from './dto/create-account.dto';
 import { UserRole } from '../common';
 import { IdempotencyService } from './idempotency.service';
 import { AuditService, AuditAction } from '../audit';
-
+import { RedisCacheService } from 'src/redis/redis-cache.service';
 @Injectable()
 export class AccountService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly idempotencyService: IdempotencyService,
     private readonly auditService: AuditService,
+    private readonly cacheService: RedisCacheService,
   ) {}
 
   private async findAccountByUserId(
@@ -50,11 +51,25 @@ export class AccountService {
   }
 
   async getAccount(userId: number) {
-    return this.findAccountByUserId(userId);
+    const cached = await this.cacheService.getAccount(userId);
+    if (cached) {
+      console.log('CACHE HIT  — returned from Redis');
+      return cached;
+    }
+    console.log('CACHE MISS  — hitting DB');;
+    const account = await this.findAccountByUserId(userId);
+    await this.cacheService.setAccount(userId, account);
+    return account;
   }
 
   async getAll(options?: { skip?: number; take?: number }) {
     const pagination = { skip: options?.skip || 0, take: options?.take || 10 };
+
+    const cached = await this.cacheService.getAllAccounts(
+      pagination.skip,
+      pagination.take,
+    );
+    if (cached) return cached;
 
     const totalAccounts = await this.prisma.account.count();
     const accounts = await this.prisma.account.findMany({
@@ -72,13 +87,19 @@ export class AccountService {
         },
       },
     });
-
-    return {
+    const result = {
       count: totalAccounts,
       skip: pagination.skip,
       take: pagination.take,
       data: accounts,
     };
+    await this.cacheService.setAllAccounts(
+      pagination.skip,
+      pagination.take,
+      result,
+    );
+
+    return result;
   }
 
   async deposit(amount: number, userId: number, idempotencyKey?: string) {
@@ -109,6 +130,8 @@ export class AccountService {
 
       return { account: updatedAccount, transaction };
     });
+
+    await this.cacheService.invalidateAfterTransaction(userId);
 
     if (idempotencyKey) {
       await this.idempotencyService.saveResponse(idempotencyKey, result);
@@ -153,6 +176,7 @@ export class AccountService {
       return { account: updatedAccount, transaction };
     });
 
+    await this.cacheService.invalidateAfterTransaction(userId);
     if (idempotencyKey) {
       await this.idempotencyService.saveResponse(idempotencyKey, result);
     }
@@ -230,7 +254,10 @@ export class AccountService {
 
       return { sender: updatedSender, receiver: updatedReceiver, transaction };
     });
-
+    await Promise.all([
+      this.cacheService.invalidateAfterTransaction(senderUserId),
+      this.cacheService.invalidateAfterTransaction(receiverUserId),
+    ]);
     if (idempotencyKey) {
       await this.idempotencyService.saveResponse(idempotencyKey, result);
     }
@@ -250,8 +277,14 @@ export class AccountService {
     options?: { skip?: number; take?: number },
   ) {
     const pagination = { skip: options?.skip || 0, take: options?.take || 10 };
-    const account = await this.findAccountByUserId(userId);
 
+    const cached = await this.cacheService.getTransactions(
+      userId,
+      pagination.skip,
+      pagination.take,
+    );
+    if (cached) return cached;
+    const account = await this.findAccountByUserId(userId);
     const totalTransactions = await this.prisma.transaction.count({
       where: { accountId: account.id },
     });
@@ -263,12 +296,19 @@ export class AccountService {
       take: pagination.take,
     });
 
-    return {
+    const result = {
       count: totalTransactions,
-      skip: pagination.skip,
       take: pagination.take,
+      skip: pagination.skip,
       data: transactions,
     };
+    await this.cacheService.setTransactions(
+      userId,
+      pagination.skip,
+      pagination.take,
+      result,
+    );
+    return result;
   }
 
   async getAllTransactions(options?: { skip?: number; take?: number }) {
@@ -302,10 +342,10 @@ export class AccountService {
     options?: { skip?: number; take?: number },
   ) {
     if (requestingUserRole === UserRole.Customer) {
-      return this.findAccountByUserId(requestingUserId);
+      return this.getAccount(requestingUserId);
     }
     if (queryUserId) {
-      return this.findAccountByUserId(queryUserId);
+      return this.getAccount(queryUserId);
     }
     return this.getAll(options);
   }
