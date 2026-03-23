@@ -3,14 +3,21 @@ import {
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
+import { Prisma } from '../generated/prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateAccountDto } from './dto/create-account.dto';
-import { Prisma } from '../generated/prisma/client';
 import { UserRole } from '../common';
-
+import { IdempotencyService } from './idempotency.service';
+import { AuditService, AuditAction } from '../audit';
+import { RedisCacheService } from 'src/redis/redis-cache.service';
 @Injectable()
 export class AccountService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly idempotencyService: IdempotencyService,
+    private readonly auditService: AuditService,
+    private readonly cacheService: RedisCacheService,
+  ) {}
 
   private async findAccountByUserId(
     userId: number,
@@ -28,20 +35,41 @@ export class AccountService {
     });
     if (!user) throw new NotFoundException('User does not exist');
 
-    return this.prisma.account.create({
+    const account = await this.prisma.account.create({
       data: {
         userId: data.userId,
         currency: data.currency || 'INR',
       },
     });
+
+    await this.auditService.log(data.userId, AuditAction.CREATE_ACCOUNT, {
+      accountId: account.id,
+      currency: account.currency,
+    });
+
+    return account;
   }
 
   async getAccount(userId: number) {
-    return this.findAccountByUserId(userId);
+    const cached = await this.cacheService.getAccount(userId);
+    if (cached) {
+      console.log('CACHE HIT  — returned from Redis');
+      return cached;
+    }
+    console.log('CACHE MISS  — hitting DB');;
+    const account = await this.findAccountByUserId(userId);
+    await this.cacheService.setAccount(userId, account);
+    return account;
   }
 
   async getAll(options?: { skip?: number; take?: number }) {
     const pagination = { skip: options?.skip || 0, take: options?.take || 10 };
+
+    const cached = await this.cacheService.getAllAccounts(
+      pagination.skip,
+      pagination.take,
+    );
+    if (cached) return cached;
 
     const totalAccounts = await this.prisma.account.count();
     const accounts = await this.prisma.account.findMany({
@@ -59,17 +87,31 @@ export class AccountService {
         },
       },
     });
-
-    return {
+    const result = {
       count: totalAccounts,
       skip: pagination.skip,
       take: pagination.take,
       data: accounts,
     };
+    await this.cacheService.setAllAccounts(
+      pagination.skip,
+      pagination.take,
+      result,
+    );
+
+    return result;
   }
 
-  async deposit(amount: number, userId: number) {
-    return this.prisma.$transaction(async (tx) => {
+  async deposit(amount: number, userId: number, idempotencyKey?: string) {
+    console.log('idempotencyKey received:', idempotencyKey);
+    if (idempotencyKey) {
+      const existing =
+        await this.idempotencyService.getExistingResponse(idempotencyKey);
+      console.log('existing response:', existing);
+      if (existing) return existing.response;
+    }
+
+    const result = await this.prisma.$transaction(async (tx) => {
       const account = await this.findAccountByUserId(userId, tx);
 
       const updatedAccount = await tx.account.update({
@@ -88,10 +130,29 @@ export class AccountService {
 
       return { account: updatedAccount, transaction };
     });
+
+    await this.cacheService.invalidateAfterTransaction(userId);
+
+    if (idempotencyKey) {
+      await this.idempotencyService.saveResponse(idempotencyKey, result);
+    }
+
+    await this.auditService.log(userId, AuditAction.DEPOSIT, {
+      amount,
+      accountId: result.account.id,
+      transactionId: result.transaction.id,
+    });
+    return result;
   }
 
-  async withdraw(amount: number, userId: number) {
-    return this.prisma.$transaction(async (tx) => {
+  async withdraw(amount: number, userId: number, idempotencyKey?: string) {
+    if (idempotencyKey) {
+      const existing =
+        await this.idempotencyService.getExistingResponse(idempotencyKey);
+      if (existing) return existing.response;
+    }
+
+    const result = await this.prisma.$transaction(async (tx) => {
       const account = await this.findAccountByUserId(userId, tx);
 
       if (account.balance < amount) {
@@ -114,10 +175,33 @@ export class AccountService {
 
       return { account: updatedAccount, transaction };
     });
+
+    await this.cacheService.invalidateAfterTransaction(userId);
+    if (idempotencyKey) {
+      await this.idempotencyService.saveResponse(idempotencyKey, result);
+    }
+
+    await this.auditService.log(userId, AuditAction.WITHDRAW, {
+      amount,
+      accountId: result.account.id,
+      transactionId: result.transaction.id,
+    });
+    return result;
   }
 
-  async transfer(amount: number, senderUserId: number, receiverUserId: number) {
-    return this.prisma.$transaction(async (tx) => {
+  async transfer(
+    amount: number,
+    senderUserId: number,
+    receiverUserId: number,
+    idempotencyKey?: string,
+  ) {
+    if (idempotencyKey) {
+      const existing =
+        await this.idempotencyService.getExistingResponse(idempotencyKey);
+      if (existing) return existing.response;
+    }
+
+    const result = await this.prisma.$transaction(async (tx) => {
       const senderAccount = await this.findAccountByUserId(senderUserId, tx);
       const receiverAccount = await this.findAccountByUserId(
         receiverUserId,
@@ -170,6 +254,22 @@ export class AccountService {
 
       return { sender: updatedSender, receiver: updatedReceiver, transaction };
     });
+    await Promise.all([
+      this.cacheService.invalidateAfterTransaction(senderUserId),
+      this.cacheService.invalidateAfterTransaction(receiverUserId),
+    ]);
+    if (idempotencyKey) {
+      await this.idempotencyService.saveResponse(idempotencyKey, result);
+    }
+
+    await this.auditService.log(senderUserId, AuditAction.TRANSFER, {
+      amount,
+      senderAccountId: result.sender.id,
+      receiverAccountId: result.receiver.id,
+      transactionId: result.transaction.id,
+    });
+
+    return result;
   }
 
   async getTransactionHistory(
@@ -177,8 +277,14 @@ export class AccountService {
     options?: { skip?: number; take?: number },
   ) {
     const pagination = { skip: options?.skip || 0, take: options?.take || 10 };
-    const account = await this.findAccountByUserId(userId);
 
+    const cached = await this.cacheService.getTransactions(
+      userId,
+      pagination.skip,
+      pagination.take,
+    );
+    if (cached) return cached;
+    const account = await this.findAccountByUserId(userId);
     const totalTransactions = await this.prisma.transaction.count({
       where: { accountId: account.id },
     });
@@ -190,12 +296,19 @@ export class AccountService {
       take: pagination.take,
     });
 
-    return {
+    const result = {
       count: totalTransactions,
-      skip: pagination.skip,
       take: pagination.take,
+      skip: pagination.skip,
       data: transactions,
     };
+    await this.cacheService.setTransactions(
+      userId,
+      pagination.skip,
+      pagination.take,
+      result,
+    );
+    return result;
   }
 
   async getAllTransactions(options?: { skip?: number; take?: number }) {
@@ -229,14 +342,14 @@ export class AccountService {
     options?: { skip?: number; take?: number },
   ) {
     if (requestingUserRole === UserRole.Customer) {
-      return this.findAccountByUserId(requestingUserId);
+      return this.getAccount(requestingUserId);
     }
     if (queryUserId) {
-      return this.findAccountByUserId(queryUserId);
+      return this.getAccount(queryUserId);
     }
     return this.getAll(options);
   }
-  
+
   async getTransactions(
     requestingUserId: number,
     requestingUserRole: string | undefined,
@@ -251,6 +364,4 @@ export class AccountService {
     }
     return this.getAllTransactions(options);
   }
-
-  
 }
