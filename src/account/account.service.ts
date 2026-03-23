@@ -10,6 +10,8 @@ import { UserRole } from '../common';
 import { IdempotencyService } from './idempotency.service';
 import { AuditService, AuditAction } from '../audit';
 import { RedisCacheService } from 'src/redis/redis-cache.service';
+import { FraudService } from 'src/fraud/fraud.service';
+import { MailService } from 'src/mail';
 @Injectable()
 export class AccountService {
   constructor(
@@ -17,7 +19,9 @@ export class AccountService {
     private readonly idempotencyService: IdempotencyService,
     private readonly auditService: AuditService,
     private readonly cacheService: RedisCacheService,
-  ) {}
+    private readonly fraudService: FraudService,
+    private readonly mailService: MailService,
+  ) { }
 
   private async findAccountByUserId(
     userId: number,
@@ -103,6 +107,7 @@ export class AccountService {
   }
 
   async deposit(amount: number, userId: number, idempotencyKey?: string) {
+    await this.fraudService.checkFraud(userId, amount)
     console.log('idempotencyKey received:', idempotencyKey);
     if (idempotencyKey) {
       const existing =
@@ -132,7 +137,25 @@ export class AccountService {
     });
 
     await this.cacheService.invalidateAfterTransaction(userId);
+    await this.fraudService.recordTransaction(userId, amount)
 
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+
+    if (user) {
+      await this.mailService.send({
+        to: user.email,
+        subject: 'Deposit Confirmation',
+        mailBodyOrTemplate: {
+          name: 'deposit-confirmation',
+          data: {
+            username: `${user.firstname} ${user.lastname}`,
+            amount,
+            balance: result.account.balance,
+            transactionId: result.transaction.id,
+          },
+        },
+      });
+    }
     if (idempotencyKey) {
       await this.idempotencyService.saveResponse(idempotencyKey, result);
     }
@@ -146,6 +169,8 @@ export class AccountService {
   }
 
   async withdraw(amount: number, userId: number, idempotencyKey?: string) {
+
+    await this.fraudService.checkFraud(userId, amount);
     if (idempotencyKey) {
       const existing =
         await this.idempotencyService.getExistingResponse(idempotencyKey);
@@ -176,7 +201,28 @@ export class AccountService {
       return { account: updatedAccount, transaction };
     });
 
+
     await this.cacheService.invalidateAfterTransaction(userId);
+    await this.fraudService.recordTransaction(userId, amount);
+
+    const user = await this.prisma.user.findUnique({ where: { id: userId } });
+
+    if (user) {
+      await this.mailService.send({
+        to: user.email,
+        subject: 'Withdrawal Confirmation',
+        mailBodyOrTemplate: {
+          name: 'withdrawal-confirmation',
+          data: {
+            username: `${user.firstname} ${user.lastname}`,
+            amount,
+            balance: result.account.balance,
+            transactionId: result.transaction.id,
+          },
+        },
+      });
+    }
+
     if (idempotencyKey) {
       await this.idempotencyService.saveResponse(idempotencyKey, result);
     }
@@ -195,6 +241,8 @@ export class AccountService {
     receiverUserId: number,
     idempotencyKey?: string,
   ) {
+
+    await this.fraudService.checkFraud(senderUserId, amount);
     if (idempotencyKey) {
       const existing =
         await this.idempotencyService.getExistingResponse(idempotencyKey);
@@ -258,6 +306,44 @@ export class AccountService {
       this.cacheService.invalidateAfterTransaction(senderUserId),
       this.cacheService.invalidateAfterTransaction(receiverUserId),
     ]);
+
+    await this.fraudService.recordTransaction(senderUserId, amount);
+    
+    const [sender, receiver] = await Promise.all([
+      this.prisma.user.findUnique({ where: { id: senderUserId } }),
+      this.prisma.user.findUnique({ where: { id: receiverUserId } }),
+    ]);
+    await Promise.all([
+      sender ? this.mailService.send({
+        to: sender.email,
+        subject: 'Transfer Confirmation',
+        mailBodyOrTemplate: {
+          name: 'transfer-confirmation',
+          data: {
+            username: `${sender.firstname} ${sender.lastname}`,
+            amount,
+            balance: result.sender.balance,
+            receiverAccountId: receiverUserId,
+            transactionId: result.transaction.id,
+          },
+        },
+      }) : Promise.resolve(),
+      receiver ? this.mailService.send({
+        to: receiver.email,
+        subject: 'Transfer Received',
+        mailBodyOrTemplate: {
+          name: 'transfer-confirmation',
+          data: {
+            username: `${receiver.firstname} ${receiver.lastname}`,
+            amount,
+            balance: result.receiver.balance,
+            senderAccountId: senderUserId,
+            transactionId: result.transaction.id,
+          },
+        },
+      }) : Promise.resolve(),
+    ]);
+
     if (idempotencyKey) {
       await this.idempotencyService.saveResponse(idempotencyKey, result);
     }
