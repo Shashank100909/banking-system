@@ -59,6 +59,7 @@ model User {
   isVerified   Boolean       @default(false) @map("is_verified")
   country      String?
   status       UserStatus    @default(Active)
+  fcmToken     String? 
 
   role UserRole @default(Customer)
 

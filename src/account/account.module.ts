@@ -7,9 +7,10 @@ import { AuditModule } from '../audit';
 import { RedisModule } from 'src/redis';
 import { FraudModule } from 'src/fraud/fraud.module';
 import { MailModule } from 'src/mail';
+import { FirebaseModule } from '../firebase/firebase.module';
 
 @Module({
-  imports: [AuditModule, RedisModule, FraudModule, MailModule],
+  imports: [AuditModule, RedisModule, FraudModule, MailModule, FirebaseModule],
   controllers: [AccountController],
   providers: [AccountService, PrismaService, IdempotencyService],
 })

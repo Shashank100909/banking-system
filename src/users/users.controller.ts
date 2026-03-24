@@ -12,6 +12,7 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
+import { Request } from 'express';
 import { ApiBearerAuth, ApiParam, ApiTags } from '@nestjs/swagger';
 import {
   AuthenticatedRequest,
@@ -31,6 +32,13 @@ import {
   UpdateUserProfileRequestDto,
 } from './dto';
 import { UserStatus } from '../generated/prisma/client';
+import { UserRole } from '../common';
+
+type AuthRequest = Request & {
+  user: {
+    sub: number;
+  };
+};
 
 @ApiTags('User')
 @ApiBearerAuth()
@@ -140,5 +148,15 @@ export class UsersController extends BaseController {
   ) {
     await this.usersService.setStatus(userId, status);
     return { status: 'success' };
+  }
+
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserType.Admin, UserRole.Employee, UserRole.Customer)
+  @Post('fcm-token')
+  async saveToken(
+    @Req() req: AuthenticatedRequest,
+    @Body('token') token: string,
+  ) {
+    return this.usersService.saveFcmToken(req.user.id, token); 
   }
 }

@@ -12,6 +12,7 @@ import { AuditService, AuditAction } from '../audit';
 import { RedisCacheService } from 'src/redis/redis-cache.service';
 import { FraudService } from 'src/fraud/fraud.service';
 import { MailService } from 'src/mail';
+import { FirebaseService } from '../firebase/firebase.service';
 @Injectable()
 export class AccountService {
   constructor(
@@ -21,6 +22,7 @@ export class AccountService {
     private readonly cacheService: RedisCacheService,
     private readonly fraudService: FraudService,
     private readonly mailService: MailService,
+    private readonly firebaseService: FirebaseService,
   ) { }
 
   private async findAccountByUserId(
@@ -165,6 +167,16 @@ export class AccountService {
         },
       });
     }
+
+    if (user?.fcmToken) {
+      await this.firebaseService.sendPushNotification(
+        user.fcmToken,
+        'Deposit Successful',
+        `₹${amount} has been credited to your account.`,
+        { type: 'DEPOSIT', transactionId: String(result.transaction.id) },
+      );
+    }
+
     if (idempotencyKey) {
       await this.idempotencyService.saveResponse(idempotencyKey, result);
     }
@@ -239,6 +251,16 @@ export class AccountService {
         },
       });
     }
+
+    if (user?.fcmToken) {
+      await this.firebaseService.sendPushNotification(
+        user.fcmToken,
+        'Withdrawal Successful',
+        `₹${amount} has been debited from your account.`,
+        { type: 'WITHDRAW', transactionId: String(result.transaction.id) },
+      );
+    }
+
 
     if (idempotencyKey) {
       await this.idempotencyService.saveResponse(idempotencyKey, result);
@@ -359,6 +381,18 @@ export class AccountService {
           },
         },
       }) : Promise.resolve(),
+      sender?.fcmToken ? this.firebaseService.sendPushNotification(  
+        sender.fcmToken,
+        'Transfer Successful',
+        `₹${amount} has been sent successfully.`,
+        { type: 'TRANSFER_SENT', transactionId: String(result.transaction.id) },
+      ) : Promise.resolve(),
+      receiver?.fcmToken ? this.firebaseService.sendPushNotification( 
+        receiver.fcmToken,
+        'Money Received',
+        `₹${amount} has been credited to your account.`,
+        { type: 'TRANSFER_RECEIVED', transactionId: String(result.transaction.id) },
+      ) : Promise.resolve(),
     ]);
 
     if (idempotencyKey) {

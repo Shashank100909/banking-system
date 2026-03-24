@@ -15,6 +15,7 @@ import { AuthModule } from './auth';
 import { RedisModule } from './redis';
 import { AccountModule } from './account/account.module';
 import { AuditModule } from './audit';
+import { FirebaseModule } from './firebase/firebase.module'
 
 @Module({
   imports: [
@@ -40,6 +41,7 @@ import { AuditModule } from './audit';
     AuthModule,
     AccountModule,
     AuditModule,
+    FirebaseModule,
   ],
   controllers: [AppController],
   providers: [
