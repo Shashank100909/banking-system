@@ -1,28 +1,11 @@
-import {
-  Controller,
-  Post,
-  Get,
-  Body,
-  UseGuards,
-  Req,
-  Query,
-  BadRequestException,
-} from '@nestjs/common';
+import {Controller,Post,Get,Body,UseGuards,Req,Query} from '@nestjs/common';
 import { AccountService } from './account.service';
 import { CreateAccountDto } from './dto/create-account.dto';
 import { TransferDto } from './dto/transfer.dto';
 import { ApiResponseDto } from '../common/dto/api-response.dto';
 import { GetAccountsRequestDto } from './dto/get-accounts-request.dto';
 import { DepositDto } from './dto/deposit.dto';
-import {
-  JwtAuthGuard,
-  AccessGuard,
-  RolesGuard,
-  Roles,
-  AuthenticatedRequest,
-  UserType,
-  UserRole,
-} from '../common';
+import {JwtAuthGuard,AccessGuard,RolesGuard,Roles,AuthenticatedRequest,UserType,UserRole} from '../common';
 import { WithdrawDto } from './dto/withdraw.dto';
 
 @UseGuards(JwtAuthGuard, AccessGuard, RolesGuard)
@@ -79,7 +62,7 @@ export class AccountController {
     @Req() req: AuthenticatedRequest,
   ): Promise<ApiResponseDto> {
     const idempotencyKey = req.headers['idempotency-key'] as string;
-    const result = await this.accountService.withdraw(dto.amount, req.user.id);
+    const result = await this.accountService.withdraw(dto.amount, req.user.id, idempotencyKey);
     return new ApiResponseDto('Amount withdrawn successfully', {
       data: result,
     });
@@ -97,6 +80,7 @@ export class AccountController {
       dto.amount,
       req.user.id,
       dto.receiverUserId,
+      idempotencyKey,
     );
     return new ApiResponseDto('Amount transferred successfully', {
       data: result,
