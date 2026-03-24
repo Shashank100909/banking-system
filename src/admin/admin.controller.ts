@@ -23,6 +23,7 @@ import {
   ChangePasswordRequestDto,
   UpdateProfileDetailsRequestDto,
   UpdateProfileImageRequestDto,
+  CreateEmployeeDto,
 } from './dto';
 
 @ApiTags('Admin')
@@ -87,4 +88,28 @@ export class AdminController extends BaseController {
     await this.adminService.authenticate(ctx.user.id, data.password);
     return { status: 'success' };
   }
+
+  @Post('employees')
+async createEmployee(
+  @Body() data: CreateEmployeeDto,
+) {
+  const employee = await this.adminService.createEmployee({
+    firstname: data.firstname,
+    lastname: data.lastname,
+    email: data.email,
+    password: data.password,
+    country: data.country,
+  });
+  return {
+    status: 'success',
+    data: {
+      id: employee.id,
+      firstname: employee.firstname,
+      lastname: employee.lastname,
+      email: employee.email,
+      role: employee.role,
+      createdAt: employee.createdAt,
+    },
+  };
+}
 }

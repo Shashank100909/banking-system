@@ -132,6 +132,15 @@ export class AccountService {
           status: 'SUCCESS',
         },
       });
+      await tx.ledgerEntry.create({
+        data: {
+          accountId: account.id,
+          transactionId: transaction.id,
+          amount,
+          type: 'CREDIT',  
+        },
+      });
+
 
       return { account: updatedAccount, transaction };
     });
@@ -198,6 +207,14 @@ export class AccountService {
         },
       });
 
+      await tx.ledgerEntry.create({
+        data: {
+          accountId: account.id,
+          transactionId: transaction.id,
+          amount,
+          type: 'DEBIT', 
+        },
+      });
       return { account: updatedAccount, transaction };
     });
 
@@ -308,7 +325,7 @@ export class AccountService {
     ]);
 
     await this.fraudService.recordTransaction(senderUserId, amount);
-    
+
     const [sender, receiver] = await Promise.all([
       this.prisma.user.findUnique({ where: { id: senderUserId } }),
       this.prisma.user.findUnique({ where: { id: receiverUserId } }),
