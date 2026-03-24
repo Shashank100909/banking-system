@@ -606,4 +606,34 @@ export class UsersService {
       data: response,
     };
   }
+
+  async createEmployee(data: {
+    firstname: string;
+    lastname: string;
+    email: string;
+    password: string;
+    country?: string;
+  }): Promise<User> {
+    if (await this.isEmailExist(data.email)) {
+      throw new Error('Email already in use');
+    }
+  
+    const { salt, hash } = this.hashPassword(data.password);
+  
+    return await this.prisma.user.create({
+      data: {
+        firstname: data.firstname,
+        lastname: data.lastname,
+        email: data.email.toLowerCase(),
+        country: data.country,
+        role: 'Employee' as const , 
+        meta: {
+          create: {
+            passwordHash: hash,
+            passwordSalt: salt,
+          },
+        },
+      },
+    });
+  }
 }

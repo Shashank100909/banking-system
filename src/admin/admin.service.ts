@@ -14,6 +14,7 @@ import {
 import { PrismaService } from '../prisma';
 import { Admin, AdminMeta, Prisma } from '../generated/prisma/client';
 import { AdminStatus } from '../generated/prisma/enums';
+import { UsersService } from '../users';
 
 @Injectable()
 export class AdminService {
@@ -24,6 +25,7 @@ export class AdminService {
     private readonly prisma: PrismaService,
     private readonly utilsService: UtilsService,
     private readonly storageService: StorageService,
+    private readonly usersService: UsersService,
   ) {}
 
   private getProfileImageUrl(profileImage: string): string {
@@ -233,5 +235,15 @@ export class AdminService {
         id: userId,
       },
     });
+  }
+
+  async createEmployee(data: {
+    firstname: string;
+    lastname: string;
+    email: string;
+    password: string;
+    country?: string;
+  }) {
+    return await this.usersService.createEmployee(data);
   }
 }
